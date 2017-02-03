@@ -31,6 +31,8 @@ from datetime import datetime
 from struct import unpack_from
 
 import numpy as np
+import numpy.matlib as npmatlib  # WJL add
+import math   # WJL add
 import numpy
 import os
 import re
@@ -40,7 +42,7 @@ from mi.core.exceptions import InstrumentDataException
 from mi.core.instrument.data_particle import DataParticle
 from mi.core.log import get_logger
 from mi.instrument.kut.ek60.ooicore.zplsc_echogram import SAMPLE_MATCHER, LENGTH_SIZE, DATAGRAM_HEADER_SIZE, \
-    CONFIG_HEADER_SIZE, CONFIG_TRANSDUCER_SIZE, read_config_header, ZPLSPlot
+    CONFIG_HEADER_SIZE, CONFIG_TRANSDUCER_SIZE, read_config_header, read_config_transducer, ZPLSPlot
 
 log = get_logger()
 __author__ = 'Ronald Ronquillo'
@@ -248,11 +250,17 @@ def generate_relative_file_path(filepath):
     relative to the reference designator directory.
     """
     filename = os.path.basename(filepath)
-    reference_designator, _ = filename.split('_', 1)
-    delimiter = reference_designator + os.sep
+    # reference_designator, _ = filename.split('_', 1)
+    # delimiter = reference_designator + os.sep
+    #
+    # if delimiter in filepath:
+    #     return filepath[filepath.index(delimiter):].replace(delimiter, '')
+    if len(filename.split('_', 1))>1:
+        reference_designator, _ = filename.split('_', 1)
+        delimiter = reference_designator + os.sep
 
-    if delimiter in filepath:
-        return filepath[filepath.index(delimiter):].replace(delimiter, '')
+        if delimiter in filepath:
+            return filepath[filepath.index(delimiter):].replace(delimiter, '')
 
     # unable to determine relative path, return just the filename
     return filename
@@ -283,6 +291,41 @@ def extract_file_time(filepath):
 
 
 def read_header(filehandle):
+    # Read binary file a block at a time
+    raw = filehandle.read(BLOCK_SIZE)
+
+    # Read the configuration datagram, output at the beginning of the file
+    length1, = unpack_from('<l', raw)
+    byte_cnt = LENGTH_SIZE
+
+    # Configuration datagram header
+    byte_cnt += DATAGRAM_HEADER_SIZE
+
+    # Configuration: header
+    config_header = read_config_header(raw[byte_cnt:byte_cnt+CONFIG_HEADER_SIZE])
+    byte_cnt += CONFIG_HEADER_SIZE
+    config_transducer = []
+    for num_transducer in range(config_header['transducer_count']):
+        config_transducer.append(read_config_transducer(raw[byte_cnt:byte_cnt+CONFIG_TRANSDUCER_SIZE]))
+        byte_cnt += CONFIG_TRANSDUCER_SIZE
+    #byte_cnt += CONFIG_TRANSDUCER_SIZE * config_header['transducer_count']
+
+    # Compare length1 (from beginning of datagram) to length2 (from the end of datagram) to
+    # the actual number of bytes read. A mismatch can indicate an invalid, corrupt, misaligned,
+    # or missing configuration datagram or a reverse byte order binary data file.
+    # A bad/missing configuration datagram header is a significant error.
+    length2, = unpack_from('<l', raw, byte_cnt)
+    if not (length1 == length2 == byte_cnt-LENGTH_SIZE):
+        raise InstrumentDataException(
+            "Length of configuration datagram and number of bytes read do not match: length1: %s"
+            ", length2: %s, byte_cnt: %s. Possible file corruption or format incompatibility." %
+            (length1, length2, byte_cnt+LENGTH_SIZE))
+    byte_cnt += LENGTH_SIZE
+    filehandle.seek(byte_cnt)
+    return config_header, config_transducer
+
+
+def read_header_old(filehandle):
     # Read binary file a block at a time
     raw = filehandle.read(BLOCK_SIZE)
 
@@ -334,7 +377,221 @@ def parse_echogram_file(input_file_path, output_file_path=None):
 
     with open(input_file_path, 'rb') as input_file:
 
-        config_header = read_header(input_file)
+        config_header, config_transducer = read_header(input_file)
+        transducer_count = config_header['transducer_count']
+
+        trans_keys = range(1, transducer_count+1)
+        frequencies = dict.fromkeys(trans_keys)       # transducer frequency
+        bin_size = None                               # transducer depth measurement
+
+        position = input_file.tell()
+        particle_data = None
+
+        last_time = None
+        sample_data_temp_dict = {}
+        power_data_temp_dict = {}
+
+        power_data_dict = {}
+        data_times = []
+
+        # Read binary file a block at a time
+        raw = input_file.read(BLOCK_SIZE)
+
+        while len(raw) > 4:
+            # We only care for the Sample datagrams, skip over all the other datagrams
+            match = SAMPLE_MATCHER.search(raw)
+
+            if match:
+                # Offset by size of length value
+                match_start = match.start() - LENGTH_SIZE
+
+                # Seek to the position of the length data before the token to read into numpy array
+                input_file.seek(position + match_start)
+
+                try:
+                    next_channel, next_time, next_sample, next_power = process_sample(input_file, transducer_count)
+
+                    if next_time != last_time:
+                        # Clear out our temporary dictionaries and set the last time to this time
+                        sample_data_temp_dict = {}
+                        power_data_temp_dict = {}
+                        last_time = next_time
+
+                    # Store this data
+                    sample_data_temp_dict[next_channel] = next_sample
+                    power_data_temp_dict[next_channel] = next_power
+
+                    # Check if we have enough records to produce a new row of data
+                    if len(sample_data_temp_dict) == len(power_data_temp_dict) == transducer_count:
+                        # if this is our first set of data, create our metadata particle and store
+                        # the frequency / bin_size data
+                        if not power_data_dict:
+                            relpath = generate_relative_file_path(image_path)
+                            first_ping_metadata = defaultdict(list)
+                            for channel, sample_data in sample_data_temp_dict.iteritems():
+                                append_metadata(first_ping_metadata, file_time, relpath,
+                                                channel, sample_data)
+
+                                frequency = sample_data['frequency'][0]
+                                frequencies[channel] = frequency
+
+                                if bin_size is None:
+                                    bin_size = sample_data['sound_velocity'] * sample_data['sample_interval'] / 2
+
+                            particle_data = first_ping_metadata, next_time
+                            power_data_dict = {channel: [] for channel in power_data_temp_dict}
+
+                        # Save the time and power data for plotting
+                        data_times.append(next_time)
+                        for channel in power_data_temp_dict:
+                            power_data_dict[channel].append(power_data_temp_dict[channel])
+
+                except InvalidTransducer:
+                    pass
+
+            else:
+                input_file.seek(position + BLOCK_SIZE - 4)
+
+            # Need current position in file to increment for next regex search offset
+            position = input_file.tell()
+            # Read the next block for regex search
+            raw = input_file.read(BLOCK_SIZE)
+
+        data_times = np.array(data_times)
+        # Convert to numpy array and decompress power data to dB
+        for channel in power_data_dict:
+            power_data_dict[channel] = np.array(power_data_dict[channel]) * 10. * numpy.log10(2) / 256.
+
+        #'''
+        log.info('Completed processing data. Generating echogram: %r', input_file_path)
+
+        plot = ZPLSPlot(data_times, power_data_dict, frequencies, bin_size)
+        plot.generate_plots()
+        plot.write_image(image_path)
+
+        log.info('Completed generating echogram: %r', input_file_path)
+        #'''
+
+        return particle_data, data_times, power_data_dict, frequencies, bin_size, config_header, config_transducer
+
+
+def get_cal_params(power_data_dict,particle_data,config_header,config_transducer):
+    """
+    Get calibration params from the unpacked file
+    """
+    cal_params = []
+    for ii in range(len(power_data_dict)):
+        cal_params_tmp = {}
+        cal_params_tmp['soundername'] = config_header['sounder_name'];
+        cal_params_tmp['frequency'] = config_transducer[ii]['frequency'];
+        cal_params_tmp['soundvelocity'] = particle_data[0]['zplsc_sound_velocity'][ii];
+        cal_params_tmp['sampleinterval'] = particle_data[0]['zplsc_sample_interval'][ii];
+        cal_params_tmp['absorptioncoefficient'] = particle_data[0]['zplsc_absorption_coeff'][ii];
+        cal_params_tmp['gain'] = config_transducer[ii]['gain']    # data.config(n).gain;
+        cal_params_tmp['equivalentbeamangle'] = config_transducer[ii]['equiv_beam_angle']   # data.config(n).equivalentbeamangle;
+        cal_params_tmp['pulselengthtable'] = config_transducer[ii]['pulse_length_table']   # data.config(n).pulselengthtable;
+        cal_params_tmp['gaintable']  = config_transducer[ii]['gain_table']   # data.config(n).gaintable;
+        cal_params_tmp['sacorrectiontable'] = config_transducer[ii]['sa_correction_table']   # data.config(n).sacorrectiontable;
+        cal_params_tmp['transmitpower'] = particle_data[0]['zplsc_transmit_power'][ii]   # data.pings(n).transmitpower(pingNo);
+        cal_params_tmp['pulselength'] = particle_data[0]['zplsc_pulse_length'][ii]   # data.pings(n).pulselength(pingNo);
+        cal_params_tmp['anglesensitivityalongship'] = config_transducer[ii]['angle_sensitivity_alongship']  # data.config(n).anglesensitivityalongship;
+        cal_params_tmp['anglesensitivityathwartship'] = config_transducer[ii]['angle_sensitivity_athwartship']   #data.config(n).anglesensitivityathwartship;
+        cal_params_tmp['anglesoffsetalongship'] = config_transducer[ii]['angle_offset_alongship']   # data.config(n).anglesoffsetalongship;
+        cal_params_tmp['angleoffsetathwartship'] = config_transducer[ii]['angle_offset_athwart']   # data.config(n).angleoffsetathwartship;
+        cal_params_tmp['transducerdepth'] = particle_data[0]['zplsc_transducer_depth'][ii]   # data.pings(n).transducerdepth(pingNo);
+        cal_params.append(cal_params_tmp)
+    return cal_params
+
+
+def power2Sv(power_data_dict,cal_params):
+    """
+    Get Sv values from the power data
+    All inputs are from the function `parse_echogram_file`
+    Created based on function `readEKRaw_ConvertPower` in Matlab written by
+    Rick Towler from the NOAA Alaska Fisheries Science Center
+    """
+    # set params
+    tvgCorrectionFactor = 2.0   # default is to apply TVG correction with offset of 2
+
+    # # transpose and flip power_data_dict
+    # for channel in power_data_dict:
+    #     # Transpose array data so we have time on the x-axis and depth on the y-axis
+    #     power_data_dict[channel] = power_data_dict[channel].transpose()
+    #     # reverse the Y axis (so depth is measured from the surface (at the top) to the ZPLS (at the bottom)
+    #     power_data_dict[channel] = power_data_dict[channel][::-1]
+
+    # Step through each frequency
+    Sv = {}
+    for n in range(len(power_data_dict)):
+        # extract cal params
+        f = cal_params[n]['frequency']
+        c = cal_params[n]['soundvelocity']
+        t = cal_params[n]['sampleinterval']
+        alpha = cal_params[n]['absorptioncoefficient']
+        G = cal_params[n]['gain']
+        phi = cal_params[n]['equivalentbeamangle']
+        pt = cal_params[n]['transmitpower']
+        tau = cal_params[n]['pulselength']
+
+        dR = c*t/2   # sample thickness
+        wvlen = c/f  # wavelength
+
+        # Calc gains
+        CSv = 10 * np.log10((pt * (10**(G/10))**2 * wvlen**2 * c * tau * 10**(phi/10)) / (32 * math.pi**2))
+        CSp = 10 * np.log10((pt * (10**(G/10))**2 * wvlen**2) / (16 * math.pi**2))
+
+        # calculate Sa Correction
+        idx = [i for i,dd in enumerate(cal_params[n]['pulselengthtable']) if dd==tau]
+        Sac = 2 * cal_params[n]['sacorrectiontable'][idx]
+
+        # determine number of samples in array
+        pSize = power_data_dict[n+1].shape   # size(data.pings(n).power);
+
+        # create range vector (in m)
+        range_vec = np.arange(pSize[0]) * dR
+            # data.pings(n).range = double((0:pSize(1) - 1) + ...
+            #    double(data.pings(n).samplerange(1)) - 1)' * dR;
+
+        # apply TVG Range correction -
+        rangeCorrected = range_vec - (tvgCorrectionFactor * dR)
+        rangeCorrected[rangeCorrected<0] = 0
+            # rangeCorrected = data.pings(n).range - (tvgCorrectionFactor * dR);
+            # rangeCorrected(rangeCorrected < 0) = 0;
+
+        # update sound speed and absorption coefficient  **** Chu 4/2/2010 ****
+        # data.pings(n).absorptioncoefficient(:) = alpha;
+        # data.pings(n).soundvelocity(:) = c;
+
+        # Calculate Sv TVG vector - ignore imag components of TVG
+        idx_inf = rangeCorrected!=0
+        TVG = np.empty(rangeCorrected.shape)
+        TVG[rangeCorrected!=0] = np.real( 20*np.log10(rangeCorrected[rangeCorrected!=0]) )  # TVG = real(20 * log10(rangeCorrected));
+        TVG[rangeCorrected==0] = 0
+        # TVG = real(20 * log10(rangeCorrected));
+
+        Sv[n+1] = power_data_dict[n+1][::-1] + np.transpose(npmatlib.repmat(TVG,pSize[1],1)) +\
+             2*cal_params[n]['absorptioncoefficient']*np.transpose(npmatlib.repmat(rangeCorrected,pSize[1],1)) - CSv - Sac
+        # data.pings(n).Sv = data.pings(n).power + ...
+        #     repmat(TVG, 1, pSize(2)) + (2 * alpha * ...
+        #     repmat(rangeCorrected, 1, pSize(2))) - CSv - Sac;
+
+    return Sv
+
+
+def parse_echogram_file_old(input_file_path, output_file_path=None):
+    """
+    Parse the *.raw file.
+    @param input_file_path absolute path/name to file to be parsed
+    @param output_file_path optional path to directory to write output
+    If omitted outputs are written to path of input file
+    """
+    log.info('Begin processing echogram data: %r', input_file_path)
+    image_path = generate_image_file_path(input_file_path, output_file_path)
+    file_time = extract_file_time(input_file_path)
+
+    with open(input_file_path, 'rb') as input_file:
+
+        config_header = read_header_old(input_file)
         transducer_count = config_header['transducer_count']
 
         trans_keys = range(1, transducer_count+1)
@@ -427,4 +684,4 @@ def parse_echogram_file(input_file_path, output_file_path=None):
 
         log.info('Completed generating echogram: %r', input_file_path)
 
-        return particle_data
+        return particle_data, data_times, power_data_dict, frequencies, bin_size
