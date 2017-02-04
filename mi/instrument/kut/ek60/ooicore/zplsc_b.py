@@ -42,7 +42,7 @@ from mi.core.exceptions import InstrumentDataException
 from mi.core.instrument.data_particle import DataParticle
 from mi.core.log import get_logger
 from mi.instrument.kut.ek60.ooicore.zplsc_echogram import SAMPLE_MATCHER, LENGTH_SIZE, DATAGRAM_HEADER_SIZE, \
-    CONFIG_HEADER_SIZE, CONFIG_TRANSDUCER_SIZE, read_config_header, read_config_transducer, ZPLSPlot
+    CONFIG_HEADER_SIZE, CONFIG_TRANSDUCER_SIZE, read_config_header, read_config_transducer, REF_TIME
 
 log = get_logger()
 __author__ = 'Ronald Ronquillo'
@@ -457,20 +457,15 @@ def parse_echogram_file(input_file_path, output_file_path=None):
             # Read the next block for regex search
             raw = input_file.read(BLOCK_SIZE)
 
+        # convert ntp time, i.e. seconds since 1900-01-01 00:00:00 to matplotlib time
         data_times = np.array(data_times)
+        data_times = (data_times / (60 * 60 * 24)) + REF_TIME
+
         # Convert to numpy array and decompress power data to dB
+        # And then transpose power data
         for channel in power_data_dict:
             power_data_dict[channel] = np.array(power_data_dict[channel]) * 10. * numpy.log10(2) / 256.
-
-        #'''
-        log.info('Completed processing data. Generating echogram: %r', input_file_path)
-
-        plot = ZPLSPlot(data_times, power_data_dict, frequencies, bin_size)
-        plot.generate_plots()
-        plot.write_image(image_path)
-
-        log.info('Completed generating echogram: %r', input_file_path)
-        #'''
+            power_data_dict[channel] = power_data_dict[channel].transpose()
 
         return particle_data, data_times, power_data_dict, frequencies, bin_size, config_header, config_transducer
 
@@ -569,8 +564,12 @@ def power2Sv(power_data_dict,cal_params):
         TVG[rangeCorrected==0] = 0
         # TVG = real(20 * log10(rangeCorrected));
 
-        Sv[n+1] = power_data_dict[n+1][::-1] + np.transpose(npmatlib.repmat(TVG,pSize[1],1)) +\
+        Sv[n+1] = power_data_dict[n+1] + np.transpose(npmatlib.repmat(TVG,pSize[1],1)) +\
              2*cal_params[n]['absorptioncoefficient']*np.transpose(npmatlib.repmat(rangeCorrected,pSize[1],1)) - CSv - Sac
+        Sv[n+1] = Sv[n+1][::-1]
+
+        # Sv[n+1] = power_data_dict[n+1][::-1] + np.transpose(npmatlib.repmat(TVG,pSize[1],1)) +\
+        #      2*cal_params[n]['absorptioncoefficient']*np.transpose(npmatlib.repmat(rangeCorrected,pSize[1],1)) - CSv - Sac
         # data.pings(n).Sv = data.pings(n).power + ...
         #     repmat(TVG, 1, pSize(2)) + (2 * alpha * ...
         #     repmat(rangeCorrected, 1, pSize(2))) - CSv - Sac;
