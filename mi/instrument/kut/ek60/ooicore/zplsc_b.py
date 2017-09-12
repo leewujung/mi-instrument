@@ -31,9 +31,7 @@ from datetime import datetime
 from struct import unpack_from
 
 import numpy as np
-import numpy.matlib as npmatlib  # WJL add
-import math   # WJL add
-import numpy
+import numpy.matlib
 import os
 import re
 
@@ -532,8 +530,8 @@ def power2Sv(power_data_dict,cal_params):
         wvlen = c/f  # wavelength
 
         # Calc gains
-        CSv = 10 * np.log10((pt * (10**(G/10))**2 * wvlen**2 * c * tau * 10**(phi/10)) / (32 * math.pi**2))
-        CSp = 10 * np.log10((pt * (10**(G/10))**2 * wvlen**2) / (16 * math.pi**2))
+        CSv = 10 * np.log10((pt * (10**(G/10))**2 * wvlen**2 * c * tau * 10**(phi/10)) / (32 * np.pi**2))
+        CSp = 10 * np.log10((pt * (10**(G/10))**2 * wvlen**2) / (16 * np.pi**2))
 
         # calculate Sa Correction
         idx = [i for i,dd in enumerate(cal_params[n]['pulselengthtable']) if dd==tau]
@@ -547,7 +545,7 @@ def power2Sv(power_data_dict,cal_params):
             # data.pings(n).range = double((0:pSize(1) - 1) + ...
             #    double(data.pings(n).samplerange(1)) - 1)' * dR;
 
-        # apply TVG Range correction -
+        # apply TVG Range correction
         rangeCorrected = range_vec - (tvgCorrectionFactor * dR)
         rangeCorrected[rangeCorrected<0] = 0
             # rangeCorrected = data.pings(n).range - (tvgCorrectionFactor * dR);
@@ -558,18 +556,17 @@ def power2Sv(power_data_dict,cal_params):
         # data.pings(n).soundvelocity(:) = c;
 
         # Calculate Sv TVG vector - ignore imag components of TVG
-        idx_inf = rangeCorrected!=0
         TVG = np.empty(rangeCorrected.shape)
         TVG[rangeCorrected!=0] = np.real( 20*np.log10(rangeCorrected[rangeCorrected!=0]) )  # TVG = real(20 * log10(rangeCorrected));
         TVG[rangeCorrected==0] = 0
         # TVG = real(20 * log10(rangeCorrected));
-
-        Sv[n+1] = power_data_dict[n+1] + np.transpose(npmatlib.repmat(TVG,pSize[1],1)) +\
-             2*cal_params[n]['absorptioncoefficient']*np.transpose(npmatlib.repmat(rangeCorrected,pSize[1],1)) - CSv - Sac
+        Sv[n+1] = (power_data_dict[n+1].T \
+                   +TVG +2*cal_params[n]['absorptioncoefficient']*rangeCorrected\
+                   -CSv -Sac).T
         Sv[n+1] = Sv[n+1][::-1]
 
-        # Sv[n+1] = power_data_dict[n+1][::-1] + np.transpose(npmatlib.repmat(TVG,pSize[1],1)) +\
-        #      2*cal_params[n]['absorptioncoefficient']*np.transpose(npmatlib.repmat(rangeCorrected,pSize[1],1)) - CSv - Sac
+        # Sv[n+1] = power_data_dict[n+1][::-1] + np.transpose(np.matlib.repmat(TVG,pSize[1],1)) +\
+        #      2*cal_params[n]['absorptioncoefficient']*np.transpose(np.matlib.repmat(rangeCorrected,pSize[1],1)) - CSv - Sac
         # data.pings(n).Sv = data.pings(n).power + ...
         #     repmat(TVG, 1, pSize(2)) + (2 * alpha * ...
         #     repmat(rangeCorrected, 1, pSize(2))) - CSv - Sac;
