@@ -361,6 +361,7 @@ def parse_echogram_file(input_file_path, output_file_path=None):
 
         power_data_dict = {}
         data_times = []
+        #temperature = []   # Used to check temperature reading in .RAW file --> all identical for OOI data
 
         # Read binary file a block at a time
         raw = input_file.read(BLOCK_SIZE)
@@ -414,6 +415,8 @@ def parse_echogram_file(input_file_path, output_file_path=None):
                         for channel in power_data_temp_dict:
                             power_data_dict[channel].append(power_data_temp_dict[channel])
 
+                        # temperature.append(next_sample['temperature'])  # check temperature values from .RAW file: all identical for OOI data
+
                 except InvalidTransducer:
                     pass
 
@@ -441,6 +444,8 @@ def parse_echogram_file(input_file_path, output_file_path=None):
 def get_cal_params(power_data_dict,particle_data,config_header,config_transducer):
     """
     Get calibration params from the unpacked file
+    Parameters come from config_header and config_transducer (both from header),
+                                      as well as particle_data (from .RAW file)
     """
     cal_params = []
     for ii in range(len(power_data_dict)):
