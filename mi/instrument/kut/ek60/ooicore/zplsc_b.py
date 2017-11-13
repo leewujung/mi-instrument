@@ -339,7 +339,7 @@ def parse_echogram_file(input_file_path, output_file_path=None):
     @param output_file_path optional path to directory to write output
     If omitted outputs are written to path of input file
     """
-    log.info('Begin processing echogram data: %r', input_file_path)
+    print 'Begin processing echogram data: %s', input_file_path
     image_path = generate_image_file_path(input_file_path, output_file_path)
     file_time = extract_file_time(input_file_path)
 
