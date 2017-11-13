@@ -441,36 +441,7 @@ def parse_echogram_file(input_file_path, output_file_path=None):
         return particle_data, data_times, power_data_dict, frequencies, bin_size, config_header, config_transducer
 
 
-def get_cal_params(power_data_dict,particle_data,config_header,config_transducer):
-    """
-    Get calibration params from the unpacked file
-    Parameters come from config_header and config_transducer (both from header),
-                                      as well as particle_data (from .RAW file)
-    """
-    cal_params = []
-    for ii in range(len(power_data_dict)):
-        cal_params_tmp = {}
-        cal_params_tmp['soundername'] = config_header['sounder_name'];
-        cal_params_tmp['frequency'] = config_transducer[ii]['frequency'];
-        cal_params_tmp['soundvelocity'] = particle_data[0]['zplsc_sound_velocity'][ii];
-        cal_params_tmp['sampleinterval'] = particle_data[0]['zplsc_sample_interval'][ii];
-        cal_params_tmp['absorptioncoefficient'] = particle_data[0]['zplsc_absorption_coeff'][ii];
-        cal_params_tmp['gain'] = config_transducer[ii]['gain']    # data.config(n).gain;
-        cal_params_tmp['equivalentbeamangle'] = config_transducer[ii]['equiv_beam_angle']   # data.config(n).equivalentbeamangle;
-        cal_params_tmp['pulselengthtable'] = config_transducer[ii]['pulse_length_table']   # data.config(n).pulselengthtable;
-        cal_params_tmp['gaintable']  = config_transducer[ii]['gain_table']   # data.config(n).gaintable;
-        cal_params_tmp['sacorrectiontable'] = config_transducer[ii]['sa_correction_table']   # data.config(n).sacorrectiontable;
-        cal_params_tmp['transmitpower'] = particle_data[0]['zplsc_transmit_power'][ii]   # data.pings(n).transmitpower(pingNo);
-        cal_params_tmp['pulselength'] = particle_data[0]['zplsc_pulse_length'][ii]   # data.pings(n).pulselength(pingNo);
-        cal_params_tmp['anglesensitivityalongship'] = config_transducer[ii]['angle_sensitivity_alongship']  # data.config(n).anglesensitivityalongship;
-        cal_params_tmp['anglesensitivityathwartship'] = config_transducer[ii]['angle_sensitivity_athwartship']   #data.config(n).anglesensitivityathwartship;
-        cal_params_tmp['anglesoffsetalongship'] = config_transducer[ii]['angle_offset_alongship']   # data.config(n).anglesoffsetalongship;
-        cal_params_tmp['angleoffsetathwartship'] = config_transducer[ii]['angle_offset_athwart']   # data.config(n).angleoffsetathwartship;
-        cal_params_tmp['transducerdepth'] = particle_data[0]['zplsc_transducer_depth'][ii]   # data.pings(n).transducerdepth(pingNo);
-        cal_params.append(cal_params_tmp)
-    return cal_params
-
-
+    
 def power2Sv(power_data_dict,cal_params):
     """
     Get Sv values from the power data
