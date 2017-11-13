@@ -523,18 +523,12 @@ def power2Sv(power_data_dict,cal_params):
         # apply TVG Range correction
         rangeCorrected = range_vec - (tvgCorrectionFactor * dR)
         rangeCorrected[rangeCorrected<0] = 0
-            # rangeCorrected = data.pings(n).range - (tvgCorrectionFactor * dR);
-            # rangeCorrected(rangeCorrected < 0) = 0;
 
-        # update sound speed and absorption coefficient  **** Chu 4/2/2010 ****
-        # data.pings(n).absorptioncoefficient(:) = alpha;
-        # data.pings(n).soundvelocity(:) = c;
-
-        # Calculate Sv TVG vector - ignore imag components of TVG
+        # get TVG
         TVG = np.empty(rangeCorrected.shape)
         TVG[rangeCorrected!=0] = np.real( 20*np.log10(rangeCorrected[rangeCorrected!=0]) )  # TVG = real(20 * log10(rangeCorrected));
         TVG[rangeCorrected==0] = 0
-        # TVG = real(20 * log10(rangeCorrected));
+
         Sv[n+1] = (power_data_dict[n+1].T \
                    +TVG +2*cal_params[n]['absorptioncoefficient']*rangeCorrected\
                    -CSv -Sac).T
